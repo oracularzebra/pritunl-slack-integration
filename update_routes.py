@@ -75,7 +75,8 @@ def main():
     hostnames = config["hostnames"]
     slack_webhook = config.get("slack_webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
     restart_cmd = config.get(
-        "openvpn_restart_cmd", "sudo systemctl restart openvpn@*"
+        "openvpn_restart_cmd",
+        os.environ.get("OPENVPN_RESTART_CMD", "sudo systemctl restart pritunl"),
     )
     default_nat = config.get("nat", True)
 

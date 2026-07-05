@@ -35,7 +35,7 @@ Create `config.json`:
     "my-alb-2.us-east-1.elb.amazonaws.com"
   ],
   "slack_webhook": "https://hooks.slack.com/services/T00/B00/xxx",
-  "openvpn_restart_cmd": "sudo systemctl restart openvpn@*",
+  "openvpn_restart_cmd": "sudo systemctl restart pritunl",
   "nat": true,
   "mongodb_uri": "mongodb://localhost:27017",
   "mongodb_db": "pritunl"
@@ -47,7 +47,7 @@ Create `config.json`:
 | `server_name` | Yes | Pritunl server name (matches `name` field in MongoDB `servers` collection) |
 | `hostnames` | Yes | Array of DNS names to track |
 | `slack_webhook` | No | Slack incoming webhook URL (or `SLACK_WEBHOOK_URL` env var) |
-| `openvpn_restart_cmd` | No | Default: `sudo systemctl restart openvpn@*` |
+| `openvpn_restart_cmd` | No | Default: `sudo systemctl restart pritunl` |
 | `nat` | No | Enable NAT on routes (default: `true`) |
 | `mongodb_uri` | No | Default: `mongodb://localhost:27017` (or `MONGODB_URI` env var) |
 | `mongodb_db` | No | Default: `pritunl` |
