@@ -1,131 +1,94 @@
-# Pritunl ALB Route Updater
+# Pritunl Route Updater
 
-Automatically update Pritunl VPN route entries when an ALB's IP addresses change. Resolves the ALB DNS name, replaces all existing `/32` routes on a Pritunl server with the resolved IPs, restarts OpenVPN, and sends a Slack notification.
-
-## Problem
-
-AWS Application Load Balancers (ALBs) can change their underlying IP addresses over time (e.g., after scale events, AZ failures, or recreation). If your Pritunl VPN routes point to ALB IPs as `/32` entries, they will break when the IPs change. This script polls the ALB DNS name, detects changes, and updates Pritunl automatically.
+Polls DNS hostnames (ALBs, NLBs, etc.) for IP changes, updates Pritunl VPN route entries in MongoDB, and restarts OpenVPN.
 
 ## How It Works
 
-1. Resolves the ALB DNS name to its current A records
-2. Reads current `/32` routes from the Pritunl server's MongoDB document
-3. Compares old vs new IPs — exits early if unchanged
-4. Replaces **all** routes on the server with the new IPs as `/32` entries
-5. Restarts OpenVPN to apply the changes
-6. Sends a Slack notification with old and new IPs
+1. Reads a JSON config file with a list of hostnames and target Pritunl server
+2. For each hostname, resolves DNS to current IPs
+3. Compares with existing routes in MongoDB (matched by `comment: "dns:<hostname>"`)
+4. If any hostname's IPs changed, updates MongoDB, restarts OpenVPN, sends Slack notification
+5. Only routes matching tracked hostnames are touched — other routes are left intact
 
 ## Requirements
 
 - Python 3.8+
-- Access to the Pritunl MongoDB instance (default: `mongodb://localhost:27017/pritunl`)
-- `sudo` access to restart OpenVPN (or a custom restart command)
+- Access to the Pritunl MongoDB instance
+- `sudo` access to restart OpenVPN
 - (Optional) Slack incoming webhook URL
 
 ## Installation
 
 ```bash
-# Clone or copy the script to your Pritunl server
-git clone <repo> /opt/pritunl-alb-updater
-cd /opt/pritunl-alb-updater
-
-# Install dependencies
-pip install -r requirements.txt
+pip install pymongo requests
 ```
+
+## Config File
+
+Create `config.json`:
+
+```json
+{
+  "server_name": "CloudKeeper",
+  "hostnames": [
+    "my-alb-1.us-east-1.elb.amazonaws.com",
+    "my-alb-2.us-east-1.elb.amazonaws.com"
+  ],
+  "slack_webhook": "https://hooks.slack.com/services/T00/B00/xxx",
+  "openvpn_restart_cmd": "sudo systemctl restart openvpn@*",
+  "nat": true,
+  "mongodb_uri": "mongodb://localhost:27017",
+  "mongodb_db": "pritunl"
+}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `server_name` | Yes | Pritunl server name (matches `name` field in MongoDB `servers` collection) |
+| `hostnames` | Yes | Array of DNS names to track |
+| `slack_webhook` | No | Slack incoming webhook URL (or `SLACK_WEBHOOK_URL` env var) |
+| `openvpn_restart_cmd` | No | Default: `sudo systemctl restart openvpn@*` |
+| `nat` | No | Enable NAT on routes (default: `true`) |
+| `mongodb_uri` | No | Default: `mongodb://localhost:27017` (or `MONGODB_URI` env var) |
+| `mongodb_db` | No | Default: `pritunl` |
 
 ## Usage
 
 ```bash
-python update_alb_routes.py \
-  --alb-dns my-alb-123456.elb.amazonaws.com \
-  --server-name CloudKeeper \
-  --slack-webhook https://hooks.slack.com/services/T00/B00/xxx
+python update_routes.py --config config.json
+python update_routes.py --config config.json --force   # apply even if no change
 ```
 
-### Arguments
-
-| Argument | Description | Default |
-|---|---|---|
-| `--alb-dns` | (Required) ALB DNS name to resolve | — |
-| `--server-name` | (Required) Pritunl server name as stored in MongoDB | — |
-| `--slack-webhook` | Slack incoming webhook URL | `$SLACK_WEBHOOK_URL` or none |
-| `--openvpn-restart-cmd` | Command to restart OpenVPN | `sudo systemctl restart openvpn@*` |
-| `--force` | Apply routes even if IPs haven't changed | off |
-
-### Environment Variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `MONGODB_URI` | MongoDB connection string | `mongodb://localhost:27017` |
-| `MONGODB_DB` | Database name | `pritunl` |
-| `SLACK_WEBHOOK_URL` | Slack webhook URL (alternative to `--slack-webhook`) | — |
-
-## Scheduling with Cron
-
-Run every 5 minutes. Only restarts OpenVPN and sends Slack when a change is detected.
+## Cron
 
 ```bash
-crontab -e
+*/5 * * * * /usr/bin/python3 /path/to/update_routes.py --config /path/to/config.json >> /var/log/route-updater.log 2>&1
 ```
 
-```
-*/5 * * * * /usr/bin/python3 /opt/pritunl-alb-updater/update_alb_routes.py \
-  --alb-dns my-alb-123456.elb.amazonaws.com \
-  --server-name CloudKeeper \
-  --slack-webhook https://hooks.slack.com/services/T00/B00/xxx \
-  >> /var/log/alb-route-updater.log 2>&1
-```
+## Route Identification
 
-### Cron with environment variables (avoids exposing tokens in the command line)
+Each hostname's routes are tagged with `comment: "dns:<hostname>"`. The script finds existing routes by this comment and only replaces those. Other routes on the server (manually added, different hostnames) are preserved.
+
+## Slack Notification Format
 
 ```
-*/5 * * * * SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00/B00/xxx \
-  /usr/bin/python3 /opt/pritunl-alb-updater/update_alb_routes.py \
-  --alb-dns my-alb-123456.elb.amazonaws.com \
-  --server-name CloudKeeper \
-  >> /var/log/alb-route-updater.log 2>&1
+Pritunl Routes Updated — CloudKeeper
+
+• my-alb-1.us-east-1.elb.amazonaws.com
+  Old: 10.0.1.10, 10.0.1.11
+  New: 10.0.1.50, 10.0.1.51
+
+• my-alb-2.us-east-1.elb.amazonaws.com
+  Old: (none)
+  New: 10.0.2.20, 10.0.2.21
 ```
 
-## MongoDB Configuration
-
-The script connects to the `pritunl` database and reads/updates the `servers` collection. The server document is matched by the `name` field.
-
-If your MongoDB requires authentication:
+## Verification
 
 ```bash
-export MONGODB_URI="mongodb://user:pass@localhost:27017/pritunl"
-```
-
-## Log Output
-
-```
-2026-07-04 12:00:01 INFO Resolving ALB DNS: my-alb-123456.elb.amazonaws.com
-2026-07-04 12:00:01 INFO Resolved IPs: ['10.0.1.50', '10.0.1.51']
-2026-07-04 12:00:01 INFO Change detected!
-2026-07-04 12:00:01 INFO   Old IPs: ['10.0.1.10/32', '10.0.1.11/32']
-2026-07-04 12:00:01 INFO   New IPs: ['10.0.1.50/32', '10.0.1.51/32']
-2026-07-04 12:00:01 INFO Routes updated in MongoDB
-2026-07-04 12:00:01 INFO Restarting OpenVPN...
-2026-07-04 12:00:03 INFO OpenVPN restarted
-2026-07-04 12:00:04 INFO Slack notification sent
-```
-
-## Validating Changes
-
-After the script runs, verify the routes on the Pritunl EC2 server:
-
-```bash
-# Check iptables NAT rules
+# Check iptables
 sudo iptables -t nat -L POSTROUTING -n -v | grep <new_ip>
 
 # Check routes in MongoDB
 mongosh pritunl --eval 'db.servers.findOne({name:"CloudKeeper"}, {routes:1}).pretty()'
-```
-
-From a connected VPN client:
-
-```bash
-# Verify traffic routes through the tunnel
-ip route get <new_ip>
-traceroute <new_ip>
 ```

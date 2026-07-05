@@ -1,0 +1,7 @@
+[Unit]
+Description=Pritunl Route Updater
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/root/pritunl-host-update-automation/.venv/bin/python /root/pritunl-host-update-automation/update_routes.py --config /root/pritunl-host-update-automation/config.json >> /var/log/route-updater.log 2>&1'

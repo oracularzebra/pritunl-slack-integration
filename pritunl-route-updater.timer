@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Pritunl Route Updater every 10 seconds
+Requires=pritunl-route-updater.service
+
+[Timer]
+OnBootSec=10
+OnUnitActiveSec=10
+
+[Install]
+WantedBy=timers.target
