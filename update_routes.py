@@ -1,9 +1,11 @@
 import os
 import sys
 import json
+import time
 import socket
 import logging
 import argparse
+import subprocess
 from copy import deepcopy
 
 import requests
@@ -29,6 +31,63 @@ def get_mongo_collection(config):
     )
     client = MongoClient(uri)
     return client[db_name]["servers"]
+
+
+def get_pritunl_pids():
+    result = subprocess.run(
+        ["pgrep", "-f", "/usr/lib/pritunl.*pritunl start"],
+        capture_output=True, text=True, timeout=10,
+    )
+    return [int(p) for p in result.stdout.strip().split() if p]
+
+
+def get_openvpn_child_pids(parent_pid):
+    result = subprocess.run(
+        ["pgrep", "-P", str(parent_pid)],
+        capture_output=True, text=True, timeout=10,
+    )
+    children = [int(p) for p in result.stdout.strip().split() if p]
+    openvpn_pids = []
+    for pid in children:
+        try:
+            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode().replace("\0", " ")
+            if "openvpn" in cmdline:
+                openvpn_pids.append(pid)
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+    return openvpn_pids
+
+
+def restart_openvpn(mode, restart_cmd):
+    if mode == "full":
+        log.info("Full Pritunl restart: %s", restart_cmd)
+        ret = os.system(restart_cmd)
+        if ret != 0:
+            log.warning("Restart command returned exit code %d", ret)
+        return
+
+    log.info("Killing OpenVPN child processes (Pritunl should respawn)...")
+    pids = get_pritunl_pids()
+    killed = []
+    for ppid in pids:
+        for ovpn_pid in get_openvpn_child_pids(ppid):
+            log.info("  Killing OpenVPN PID %d", ovpn_pid)
+            try:
+                os.kill(ovpn_pid, 15)
+                killed.append(ovpn_pid)
+            except ProcessLookupError:
+                pass
+
+    time.sleep(3)
+
+    alive = []
+    for ppid in pids:
+        alive.extend(get_openvpn_child_pids(ppid))
+    if not alive:
+        log.warning("OpenVPN did not respawn. Falling back to full Pritunl restart.")
+        os.system(restart_cmd)
+    else:
+        log.info("OpenVPN respawned (PIDs: %s)", alive)
 
 
 def send_slack_notification(webhook_url, changes, server_name):
@@ -74,6 +133,7 @@ def main():
     server_name = config["server_name"]
     hostnames = config["hostnames"]
     slack_webhook = config.get("slack_webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
+    restart_mode = config.get("restart_mode", "openvpn_only")
     restart_cmd = config.get(
         "openvpn_restart_cmd",
         os.environ.get("OPENVPN_RESTART_CMD", "sudo systemctl restart pritunl"),
@@ -158,12 +218,7 @@ def main():
     )
     log.info("Routes updated")
 
-    log.info("Restarting OpenVPN...")
-    ret = os.system(restart_cmd)
-    if ret != 0:
-        log.warning("OpenVPN restart returned exit code %d", ret)
-    else:
-        log.info("OpenVPN restarted")
+    restart_openvpn(restart_mode, restart_cmd)
 
     if slack_webhook:
         try:
