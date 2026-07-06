@@ -18,6 +18,34 @@ config = {}
 collection = None
 _loaded = False
 _config_path = None
+_hostnames_path = None
+_hostnames = []
+
+
+def _default_hostnames_path():
+    if _config_path:
+        base = os.path.dirname(os.path.abspath(_config_path))
+        return os.path.join(base, "hostnames.json")
+    return "hostnames.json"
+
+
+def _load_hostnames():
+    global _hostnames, _hostnames_path
+    path = _hostnames_path or _default_hostnames_path()
+    if os.path.exists(path):
+        with open(path) as f:
+            _hostnames = json.load(f)
+    else:
+        _hostnames = config.get("hostnames", [])
+    _hostnames_path = path
+
+
+def _write_hostnames():
+    global _hostnames_path, _hostnames
+    path = _hostnames_path or _default_hostnames_path()
+    with open(path, "w") as f:
+        json.dump(_hostnames, f, indent=2)
+    log.info("Hostnames written to %s", path)
 
 
 def load_config(path):
@@ -41,6 +69,8 @@ def load_config(path):
     if not server:
         log.error("Server '%s' not found", config["server_name"])
         sys.exit(1)
+
+    _load_hostnames()
 
 
 def _write_config():
@@ -94,8 +124,7 @@ def health():
 
 @app.route("/api/hostnames", methods=["GET"])
 def list_hostnames():
-    server = get_server()
-    return jsonify({"hostnames": config.get("hostnames", [])})
+    return jsonify({"hostnames": _hostnames})
 
 
 @app.route("/api/hostnames", methods=["POST"])
@@ -104,13 +133,12 @@ def add_hostname():
     hostname = data.get("hostname")
     if not hostname:
         abort(400, description="'hostname' is required")
-    hostnames = config.get("hostnames", [])
-    if hostname in hostnames:
+    if hostname in _hostnames:
         abort(409, description=f"Hostname {hostname} already tracked")
-    hostnames.append(hostname)
-    _write_config()
+    _hostnames.append(hostname)
+    _write_hostnames()
     log.info("Hostname added: %s", hostname)
-    return jsonify({"hostname": hostname, "hostnames": hostnames}), 201
+    return jsonify({"hostname": hostname, "hostnames": _hostnames}), 201
 
 
 @app.route("/api/hostnames", methods=["DELETE"])
@@ -119,13 +147,12 @@ def delete_hostname():
     hostname = data.get("hostname")
     if not hostname:
         abort(400, description="'hostname' is required")
-    hostnames = config.get("hostnames", [])
-    if hostname not in hostnames:
+    if hostname not in _hostnames:
         abort(404, description=f"Hostname {hostname} not found")
-    hostnames.remove(hostname)
-    _write_config()
+    _hostnames.remove(hostname)
+    _write_hostnames()
     log.info("Hostname deleted: %s", hostname)
-    return jsonify({"hostname": hostname, "hostnames": hostnames})
+    return jsonify({"hostname": hostname, "hostnames": _hostnames})
 
 
 # ─── REST API ────────────────────────────────────────────────
@@ -262,9 +289,8 @@ def slack_command():
         return jsonify({"text": f"Route `{network}` deleted."})
 
     elif command == "hostnames":
-        hostnames = config.get("hostnames", [])
-        lines = [f"*Tracked hostnames ({len(hostnames)}):*"]
-        for h in hostnames:
+        lines = [f"*Tracked hostnames ({len(_hostnames)}):*"]
+        for h in _hostnames:
             lines.append(f"• `{h}`")
         return jsonify({"text": "\n".join(lines)})
 
@@ -272,22 +298,20 @@ def slack_command():
         if len(parts) < 2:
             return jsonify({"text": "Usage: `/routes watch <hostname>`"})
         hostname = parts[1]
-        hostnames = config.get("hostnames", [])
-        if hostname in hostnames:
+        if hostname in _hostnames:
             return jsonify({"text": f"`{hostname}` is already being watched."})
-        hostnames.append(hostname)
-        _write_config()
+        _hostnames.append(hostname)
+        _write_hostnames()
         return jsonify({"text": f"Now watching `{hostname}`. The poller will track its IPs."})
 
     elif command == "unwatch":
         if len(parts) < 2:
             return jsonify({"text": "Usage: `/routes unwatch <hostname>`"})
         hostname = parts[1]
-        hostnames = config.get("hostnames", [])
-        if hostname not in hostnames:
+        if hostname not in _hostnames:
             return jsonify({"text": f"`{hostname}` is not being watched."})
-        hostnames.remove(hostname)
-        _write_config()
+        _hostnames.remove(hostname)
+        _write_hostnames()
         return jsonify({"text": f"Stopped watching `{hostname}`."})
 
     else:

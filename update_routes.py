@@ -105,12 +105,21 @@ def send_slack_notification(webhook_url, changes, server_name):
 def load_config(path):
     with open(path) as f:
         cfg = json.load(f)
-    required = ["server_name", "hostnames"]
-    for key in required:
-        if key not in cfg:
-            log.error("Missing required config key: %s", key)
-            sys.exit(1)
+    if "server_name" not in cfg:
+        log.error("Missing 'server_name' in config")
+        sys.exit(1)
     return cfg
+
+
+def load_hostnames(config, args):
+    hostnames_path = args.hostnames or os.environ.get("HOSTNAMES_PATH", "")
+    if not hostnames_path:
+        base = os.path.dirname(os.path.abspath(args.config))
+        hostnames_path = os.path.join(base, "hostnames.json")
+    if os.path.exists(hostnames_path):
+        with open(hostnames_path) as f:
+            return json.load(f)
+    return config.get("hostnames", [])
 
 
 def main():
@@ -123,6 +132,11 @@ def main():
         help="Path to JSON config file",
     )
     parser.add_argument(
+        "--hostnames",
+        default="",
+        help="Path to hostnames JSON file (default: hostnames.json next to config)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Apply routes even if no change detected",
@@ -131,7 +145,7 @@ def main():
 
     config = load_config(args.config)
     server_name = config["server_name"]
-    hostnames = config["hostnames"]
+    hostnames = load_hostnames(config, args)
     slack_webhook = config.get("slack_webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
     restart_mode = config.get("restart_mode", "openvpn_only")
     restart_cmd = config.get(
