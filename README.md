@@ -9,7 +9,8 @@ Polls DNS hostnames (ALBs, NLBs, etc.) for IP changes, updates Pritunl VPN route
 3. Compares with existing routes in MongoDB (matched by `comment: "dns:<hostname>"`)
 4. If any hostname's IPs changed, saves pending routes to a file and sends an interactive Slack message with **Approve** / **Reject** buttons
 5. Clicking **Approve** applies the new routes to MongoDB, restarts OpenVPN, and removes the pending file
-6. Only routes matching tracked hostnames are touched — other routes are left intact
+6. Clicking **Reject** saves the rejected state to a cache file (`rejected_routes.json`) so the same changes won't trigger a new notification — only a DNS change to different IPs will re-trigger
+7. Only routes matching tracked hostnames are touched — other routes are left intact
 
 ## Requirements
 
@@ -106,9 +107,11 @@ The poller is designed to run frequently (every 10s via the systemd timer). Each
 
 Each hostname's routes are tagged with `comment: "dns:<hostname>"`. The scripts find existing routes by this comment and only replace those. Other routes on the server (manually added, different hostnames) are preserved.
 
-## Interactive Slack Message
+## Interactive Slack Messages
 
-When IP changes are detected, the poller sends an interactive Slack message with the changes and **Approve** / **Reject** buttons:
+### Pending Notification
+
+When IP changes are detected, the poller sends an interactive message with the changes and **Approve** / **Reject** buttons:
 
 ```
 Pending Route Changes — CloudKeeper
@@ -124,7 +127,41 @@ Pending Route Changes — CloudKeeper
 _Review the changes above and approve or reject._
 ```
 
-Clicking **Approve** updates the routes in MongoDB, restarts OpenVPN, and replaces the message with a confirmation. Clicking **Reject** discards the pending changes.
+### Approval Confirmation
+
+After clicking **Approve**, the message updates to show the applied changes:
+
+```
+✅ Route changes approved by username and applied.
+
+• my-alb-1.us-east-1.elb.amazonaws.com
+  Old: 10.0.1.10, 10.0.1.11
+  New: 10.0.1.50, 10.0.1.51
+
+• my-alb-2.us-east-1.elb.amazonaws.com
+  Old: (none)
+  New: 10.0.2.20, 10.0.2.21
+```
+
+### Rejection Confirmation
+
+After clicking **Reject**, the message updates to show the discarded changes:
+
+```
+❌ Route changes rejected by username.
+
+• my-alb-1.us-east-1.elb.amazonaws.com
+  Old: 10.0.1.10, 10.0.1.11
+  New: 10.0.1.50, 10.0.1.51
+
+• my-alb-2.us-east-1.elb.amazonaws.com
+  Old: (none)
+  New: 10.0.2.20, 10.0.2.21
+```
+
+### Rejection Cache
+
+When changes are rejected, the rejected state is saved to a cache file (`rejected_routes.json`, auto-derived from the `pending_file` config path). The poller checks this file on every run: if the resolved IPs match the previously rejected state, no new notification is sent. A notification will only be sent again when the DNS IPs change to a different set of addresses. To clear the rejection cache and force re-notification, delete the `rejected_routes.json` file.
 
 ## Webhook Server (CRUD + Slack)
 
@@ -188,13 +225,14 @@ Create a Slack app:
 
 #### 2. Interactive Buttons (Approve/Reject)
 
-The poller sends interactive Slack messages with **Approve** / **Reject** buttons when IP changes are detected. Clicking a button updates the original message with a confirmation.
+The poller sends interactive Slack messages with **Approve** / **Reject** buttons when IP changes are detected. Button clicks are handled in a background thread (Slack requires a response within 3 seconds, so the heavy work — MongoDB update, OpenVPN restart — runs asynchronously).
 
 1. Enable **Interactivity** in your Slack app
 2. Set **Request URL** to `https://your-endpoint/slack/interactive`
 3. The poller saves pending changes and sends an interactive message
-4. Clicking **Approve** applies the routes to MongoDB, restarts OpenVPN, and removes the pending file
-5. Clicking **Reject** discards the pending changes
+4. Clicking **Approve** immediately shows "in progress", then applies routes to MongoDB, restarts OpenVPN, removes the pending file, and updates the message with the applied changes
+5. Clicking **Reject** immediately shows "in progress", then saves the rejected state to a cache file, removes the pending file, and updates the message with the discarded changes
+6. Rejected changes won't re-trigger notifications — the poller compares current DNS IPs against the rejection cache and skips matching entries
 
 #### 3. Making the Endpoint Public
 
@@ -211,6 +249,8 @@ The Flask app must be publicly accessible with HTTPS:
 | `hostnames.json` | List of DNS hostnames to track |
 | `update_routes.py` | Poller — resolves DNS, updates routes, restarts OpenVPN |
 | `webhook_server.py` | Flask API + Slack integration |
+| `/tmp/pending_routes.json` | Pending route changes awaiting approval |
+| `/tmp/rejected_routes.json` | Rejected route changes cached to prevent re-notification |
 | `pritunl-route-updater.service` | Systemd oneshot service for poller |
 | `pritunl-route-updater.timer` | Systemd timer (every 10s) for poller |
 | `pritunl-webhook.service` | Systemd service for webhook server |
