@@ -239,17 +239,24 @@ def main():
 
     tracked_tags = {f"dns:{h}" for h in hostnames}
     orphaned = [
-        r for r in current_routes
+        r for r in new_routes_all
         if (c := r.get("comment", "")).startswith("dns:") and c not in tracked_tags
     ]
     if orphaned:
-        log.warning(
-            "Orphaned routes found (hostnames not in config, not removed):"
-        )
+        orphaned_hostnames = {}
         for r in orphaned:
             tag = r.get("comment", "")
             hostname = tag[4:] if tag.startswith("dns:") else tag
-            log.warning("  %s (comment: %s)", r.get("network"), tag)
+            orphaned_hostnames.setdefault(hostname, []).append(r["network"])
+        for h, nets in orphaned_hostnames.items():
+            log.info("  Orphaned: %s (%d routes)", h, len(nets))
+            changes.append({
+                "hostname": h,
+                "old_ips": [n.split("/")[0] for n in nets],
+                "new_ips": [],
+            })
+        new_routes_all = [r for r in new_routes_all if r not in orphaned]
+        any_change = True
 
     if not any_change:
         log.info("No changes detected for any hostname")
