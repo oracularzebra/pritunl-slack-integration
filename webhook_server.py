@@ -6,6 +6,7 @@ import hashlib
 import logging
 from copy import deepcopy
 
+import requests
 from flask import Flask, request, jsonify, abort
 from pymongo import MongoClient
 
@@ -316,7 +317,15 @@ def slack_command():
 
     else:
         return jsonify({
-            "text": "Commands: `list`, `add <n> [c]`, `delete <n>`, `hostnames`, `watch <dns>`, `unwatch <dns>`"
+            "text": (
+                "Available commands:\n"
+                "• `/routes list` — show all routes\n"
+                "• `/routes add <network> [comment]` — add a route\n"
+                "• `/routes delete <network>` — delete a route\n"
+                "• `/routes hostnames` — list tracked DNS hostnames\n"
+                "• `/routes watch <hostname>` — start tracking a DNS hostname\n"
+                "• `/routes unwatch <hostname>` — stop tracking a DNS hostname"
+            )
         })
 
 
@@ -332,9 +341,11 @@ def slack_interactive():
     action = payload.get("actions", [{}])[0]
     action_id = action.get("action_id", "")
     value = action.get("value", "")
+    response_url = payload.get("response_url", "")
+    user_name = payload.get("user", {}).get("username", "Someone")
 
     if action_id == "approve_route_update":
-        pending_file = config.get("pending_file", "/tmp/pending_routes.json")
+        pending_file = value or config.get("pending_file", "/tmp/pending_routes.json")
         if not os.path.exists(pending_file):
             return jsonify({"text": "No pending changes found."})
         with open(pending_file) as f:
@@ -349,12 +360,50 @@ def slack_interactive():
         restart_cmd = config.get("openvpn_restart_cmd", "sudo systemctl restart pritunl")
         do_restart(restart_mode, restart_cmd)
         os.remove(pending_file)
+
+        if response_url:
+            try:
+                requests.post(response_url, json={
+                    "text": None,
+                    "replace_original": True,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"✅ *Route changes approved by {user_name} and applied.*",
+                            },
+                        }
+                    ],
+                }, timeout=5)
+            except Exception:
+                pass
+
         return jsonify({"text": "Route changes approved and applied."})
 
     elif action_id == "reject_route_update":
-        pending_file = config.get("pending_file", "/tmp/pending_routes.json")
+        pending_file = value or config.get("pending_file", "/tmp/pending_routes.json")
         if os.path.exists(pending_file):
             os.remove(pending_file)
+
+        if response_url:
+            try:
+                requests.post(response_url, json={
+                    "text": None,
+                    "replace_original": True,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Route changes rejected by {user_name}.*",
+                            },
+                        }
+                    ],
+                }, timeout=5)
+            except Exception:
+                pass
+
         return jsonify({"text": "Route changes rejected."})
 
     return jsonify({"text": "Unknown action."})

@@ -90,14 +90,42 @@ def restart_openvpn(mode, restart_cmd):
         log.info("OpenVPN respawned (PIDs: %s)", alive)
 
 
-def send_slack_notification(webhook_url, changes, server_name):
-    lines = [f"*Pritunl Routes Updated — {server_name}*"]
+def send_slack_interactive(webhook_url, changes, server_name, pending_file):
+    lines = [f"*Pending Route Changes — {server_name}*"]
     for c in changes:
         hostname = c["hostname"]
         old = ", ".join(c["old_ips"]) if c["old_ips"] else "(none)"
         new = ", ".join(c["new_ips"])
         lines.append(f"• `{hostname}`\n  Old: `{old}`\n  New: `{new}`")
-    payload = {"text": "\n\n".join(lines)}
+    lines.append("\n_Review the changes above and approve or reject._")
+    payload = {
+        "text": f"Pending route changes for {server_name}",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n\n".join(lines)},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve"},
+                        "style": "primary",
+                        "action_id": "approve_route_update",
+                        "value": pending_file,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Reject"},
+                        "style": "danger",
+                        "action_id": "reject_route_update",
+                        "value": pending_file,
+                    },
+                ],
+            },
+        ],
+    }
     resp = requests.post(webhook_url, json=payload, timeout=10)
     resp.raise_for_status()
 
@@ -147,6 +175,7 @@ def main():
     server_name = config["server_name"]
     hostnames = load_hostnames(config, args)
     slack_webhook = config.get("slack_webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
+    pending_file = config.get("pending_file", "/tmp/pending_routes.json")
     restart_mode = config.get("restart_mode", "openvpn_only")
     restart_cmd = config.get(
         "openvpn_restart_cmd",
@@ -225,24 +254,39 @@ def main():
         log.info("No changes detected for any hostname")
         return
 
-    log.info("Updating routes in MongoDB...")
-    collection.update_one(
-        {"name": server_name},
-        {"$set": {"routes": new_routes_all}},
-    )
-    log.info("Routes updated")
+    # Check if same changes are already pending — skip duplicate notifications
+    if os.path.exists(pending_file):
+        try:
+            with open(pending_file) as f:
+                existing = json.load(f)
+            if existing.get("routes") == new_routes_all:
+                log.info("Changes already pending in %s — skipping duplicate notification", pending_file)
+                return
+            log.info("Pending file exists but routes differ — updating")
+        except (json.JSONDecodeError, IOError):
+            log.warning("Could not read existing pending file — will overwrite")
 
-    restart_openvpn(restart_mode, restart_cmd)
+    pending = {
+        "routes": new_routes_all,
+        "changes": changes,
+        "server_name": server_name,
+    }
+    with open(pending_file, "w") as f:
+        json.dump(pending, f, indent=2)
+    log.info("Pending changes saved to %s", pending_file)
 
     if slack_webhook:
         try:
-            send_slack_notification(slack_webhook, changes, server_name)
-            log.info("Slack notification sent")
+            send_slack_interactive(slack_webhook, changes, server_name, pending_file)
+            log.info("Interactive Slack notification sent — awaiting approval")
         except Exception as e:
             log.error("Failed to send Slack notification: %s", e)
+    else:
+        log.info("No Slack webhook configured, changes remain pending in %s", pending_file)
 
     for c in changes:
-        log.info("Updated %s: %s -> %s", c["hostname"], c["old_ips"] or "(none)", c["new_ips"])
+        log.info("Pending: %s: %s -> %s", c["hostname"], c["old_ips"] or "(none)", c["new_ips"])
+    log.info("Waiting for approval via Slack interactive buttons...")
 
 
 if __name__ == "__main__":

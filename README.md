@@ -7,8 +7,9 @@ Polls DNS hostnames (ALBs, NLBs, etc.) for IP changes, updates Pritunl VPN route
 1. Reads tracked hostnames from `hostnames.json`
 2. For each hostname, resolves DNS to current IPs
 3. Compares with existing routes in MongoDB (matched by `comment: "dns:<hostname>"`)
-4. If any hostname's IPs changed, updates MongoDB, restarts OpenVPN, sends Slack notification
-5. Only routes matching tracked hostnames are touched — other routes are left intact
+4. If any hostname's IPs changed, saves pending routes to a file and sends an interactive Slack message with **Approve** / **Reject** buttons
+5. Clicking **Approve** applies the new routes to MongoDB, restarts OpenVPN, and removes the pending file
+6. Only routes matching tracked hostnames are touched — other routes are left intact
 
 ## Requirements
 
@@ -85,13 +86,17 @@ Pritunl manages OpenVPN as a child process. The `restart_mode` field controls ho
 
 ## Usage (Poller)
 
+The poller resolves DNS for all tracked hostnames. If changes are detected, it saves them to a pending file and sends an interactive Slack message with **Approve** / **Reject** buttons. Routes are **not** applied until approved.
+
 ```bash
 python update_routes.py --config config.json
-python update_routes.py --config config.json --force   # apply even if no change
+python update_routes.py --config config.json --force   # show changes even if no diff
 python update_routes.py --config config.json --hostnames /path/to/hostnames.json
 ```
 
 ### Cron / Systemd Timer
+
+The poller is designed to run frequently (every 10s via the systemd timer). Each run that detects changes will send a new interactive Slack message:
 
 ```bash
 */5 * * * * /usr/bin/python3 /path/to/update_routes.py --config /path/to/config.json >> /var/log/route-updater.log 2>&1
@@ -101,10 +106,12 @@ python update_routes.py --config config.json --hostnames /path/to/hostnames.json
 
 Each hostname's routes are tagged with `comment: "dns:<hostname>"`. The scripts find existing routes by this comment and only replace those. Other routes on the server (manually added, different hostnames) are preserved.
 
-## Slack Notification Format
+## Interactive Slack Message
+
+When IP changes are detected, the poller sends an interactive Slack message with the changes and **Approve** / **Reject** buttons:
 
 ```
-Pritunl Routes Updated — CloudKeeper
+Pending Route Changes — CloudKeeper
 
 • my-alb-1.us-east-1.elb.amazonaws.com
   Old: 10.0.1.10, 10.0.1.11
@@ -113,7 +120,11 @@ Pritunl Routes Updated — CloudKeeper
 • my-alb-2.us-east-1.elb.amazonaws.com
   Old: (none)
   New: 10.0.2.20, 10.0.2.21
+
+_Review the changes above and approve or reject._
 ```
+
+Clicking **Approve** updates the routes in MongoDB, restarts OpenVPN, and replaces the message with a confirmation. Clicking **Reject** discards the pending changes.
 
 ## Webhook Server (CRUD + Slack)
 
@@ -177,12 +188,13 @@ Create a Slack app:
 
 #### 2. Interactive Buttons (Approve/Reject)
 
-For the approval flow (poller saves pending changes, Slack asks for approval):
+The poller sends interactive Slack messages with **Approve** / **Reject** buttons when IP changes are detected. Clicking a button updates the original message with a confirmation.
 
 1. Enable **Interactivity** in your Slack app
 2. Set **Request URL** to `https://your-endpoint/slack/interactive`
-3. The poller sends a message with **Approve** / **Reject** buttons when IP changes are detected
-4. Clicking **Approve** applies the routes and restarts OpenVPN
+3. The poller saves pending changes and sends an interactive message
+4. Clicking **Approve** applies the routes to MongoDB, restarts OpenVPN, and removes the pending file
+5. Clicking **Reject** discards the pending changes
 
 #### 3. Making the Endpoint Public
 
