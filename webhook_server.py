@@ -4,6 +4,7 @@ import json
 import hmac
 import hashlib
 import logging
+import threading
 from copy import deepcopy
 
 import requests
@@ -345,9 +346,31 @@ def slack_interactive():
     user_name = payload.get("user", {}).get("username", "Someone")
 
     if action_id == "approve_route_update":
-        pending_file = value or config.get("pending_file", "/tmp/pending_routes.json")
+        threading.Thread(
+            target=_handle_approve,
+            args=(value, response_url, user_name),
+            daemon=True,
+        ).start()
+        return jsonify({"text": "Approving... this may take a moment."})
+
+    elif action_id == "reject_route_update":
+        threading.Thread(
+            target=_handle_reject,
+            args=(value, response_url, user_name),
+            daemon=True,
+        ).start()
+        return jsonify({"text": "Rejecting..."})
+
+    return jsonify({"text": "Unknown action."})
+
+
+def _handle_approve(pending_file, response_url, user_name):
+    pending_file = pending_file or config.get("pending_file", "/tmp/pending_routes.json")
+    try:
         if not os.path.exists(pending_file):
-            return jsonify({"text": "No pending changes found."})
+            _update_slack(response_url, "❌ No pending changes found.")
+            return
+
         with open(pending_file) as f:
             pending = json.load(f)
 
@@ -355,58 +378,48 @@ def slack_interactive():
             {"name": get_server_name()},
             {"$set": {"routes": pending["routes"]}},
         )
+
         from update_routes import restart_openvpn as do_restart
         restart_mode = config.get("restart_mode", "openvpn_only")
         restart_cmd = config.get("openvpn_restart_cmd", "sudo systemctl restart pritunl")
         do_restart(restart_mode, restart_cmd)
+
         os.remove(pending_file)
+        _update_slack(response_url, f"✅ *Route changes approved by {user_name} and applied.*")
+        log.info("Route changes approved by %s", user_name)
+    except Exception as e:
+        log.error("Approve failed: %s", e)
+        _update_slack(response_url, f"❌ Approval failed: {e}")
 
-        if response_url:
-            try:
-                requests.post(response_url, json={
-                    "text": None,
-                    "replace_original": True,
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"✅ *Route changes approved by {user_name} and applied.*",
-                            },
-                        }
-                    ],
-                }, timeout=5)
-            except Exception:
-                pass
 
-        return jsonify({"text": "Route changes approved and applied."})
-
-    elif action_id == "reject_route_update":
-        pending_file = value or config.get("pending_file", "/tmp/pending_routes.json")
+def _handle_reject(pending_file, response_url, user_name):
+    pending_file = pending_file or config.get("pending_file", "/tmp/pending_routes.json")
+    try:
         if os.path.exists(pending_file):
             os.remove(pending_file)
+        _update_slack(response_url, f"❌ *Route changes rejected by {user_name}.*")
+        log.info("Route changes rejected by %s", user_name)
+    except Exception as e:
+        log.error("Reject failed: %s", e)
+        _update_slack(response_url, f"❌ Rejection failed: {e}")
 
-        if response_url:
-            try:
-                requests.post(response_url, json={
-                    "text": None,
-                    "replace_original": True,
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": f"❌ *Route changes rejected by {user_name}.*",
-                            },
-                        }
-                    ],
-                }, timeout=5)
-            except Exception:
-                pass
 
-        return jsonify({"text": "Route changes rejected."})
-
-    return jsonify({"text": "Unknown action."})
+def _update_slack(response_url, text):
+    if not response_url:
+        return
+    try:
+        requests.post(response_url, json={
+            "text": None,
+            "replace_original": True,
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": text},
+                }
+            ],
+        }, timeout=10)
+    except Exception as e:
+        log.error("Failed to update Slack message: %s", e)
 
 
 # Auto-load config on import (for gunicorn)
