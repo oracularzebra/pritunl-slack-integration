@@ -351,7 +351,7 @@ def slack_interactive():
             args=(value, response_url, user_name),
             daemon=True,
         ).start()
-        return jsonify({"text": "Approving... this may take a moment."})
+        return "", 200
 
     elif action_id == "reject_route_update":
         threading.Thread(
@@ -359,7 +359,7 @@ def slack_interactive():
             args=(value, response_url, user_name),
             daemon=True,
         ).start()
-        return jsonify({"text": "Rejecting..."})
+        return "", 200
 
     return jsonify({"text": "Unknown action."})
 
@@ -367,12 +367,18 @@ def slack_interactive():
 def _handle_approve(pending_file, response_url, user_name):
     pending_file = pending_file or config.get("pending_file", "/tmp/pending_routes.json")
     try:
-        if not os.path.exists(pending_file):
-            _update_slack(response_url, "❌ No pending changes found.")
-            return
+        _update_slack(response_url, f"⏳ *Approval by {user_name} in progress — updating routes...*")
 
         with open(pending_file) as f:
             pending = json.load(f)
+
+        changes = pending.get("changes", [])
+        lines = [f"✅ *Route changes approved by {user_name} and applied.*"]
+        for c in changes:
+            hostname = c["hostname"]
+            old = ", ".join(c.get("old_ips", [])) or "(none)"
+            new = ", ".join(c.get("new_ips", []))
+            lines.append(f"• `{hostname}`\n  Old: `{old}`\n  New: `{new}`")
 
         collection.update_one(
             {"name": get_server_name()},
@@ -385,8 +391,14 @@ def _handle_approve(pending_file, response_url, user_name):
         do_restart(restart_mode, restart_cmd)
 
         os.remove(pending_file)
-        _update_slack(response_url, f"✅ *Route changes approved by {user_name} and applied.*")
+        rejected_file = pending_file.replace("pending_", "rejected_")
+        if os.path.exists(rejected_file):
+            os.remove(rejected_file)
+        _update_slack(response_url, "\n\n".join(lines))
         log.info("Route changes approved by %s", user_name)
+    except FileNotFoundError:
+        log.warning("Pending file vanished before approval could complete")
+        _update_slack(response_url, "❌ No pending changes found (they were already applied or rejected).")
     except Exception as e:
         log.error("Approve failed: %s", e)
         _update_slack(response_url, f"❌ Approval failed: {e}")
@@ -394,11 +406,29 @@ def _handle_approve(pending_file, response_url, user_name):
 
 def _handle_reject(pending_file, response_url, user_name):
     pending_file = pending_file or config.get("pending_file", "/tmp/pending_routes.json")
+    rejected_file = pending_file.replace("pending_", "rejected_")
     try:
-        if os.path.exists(pending_file):
-            os.remove(pending_file)
-        _update_slack(response_url, f"❌ *Route changes rejected by {user_name}.*")
+        _update_slack(response_url, f"⏳ *Rejection by {user_name} in progress...*")
+
+        with open(pending_file) as f:
+            rejected_state = json.load(f)
+        with open(rejected_file, "w") as f:
+            json.dump(rejected_state, f, indent=2)
+        os.remove(pending_file)
+        log.info("Rejected state saved to %s", rejected_file)
+
+        changes = rejected_state.get("changes", [])
+        lines = [f"❌ *Route changes rejected by {user_name}.*"]
+        for c in changes:
+            hostname = c["hostname"]
+            old = ", ".join(c.get("old_ips", [])) or "(none)"
+            new = ", ".join(c.get("new_ips", []))
+            lines.append(f"• `{hostname}`\n  Old: `{old}`\n  New: `{new}`")
+        _update_slack(response_url, "\n\n".join(lines))
         log.info("Route changes rejected by %s", user_name)
+    except FileNotFoundError:
+        log.warning("Pending file vanished before rejection could complete")
+        _update_slack(response_url, "❌ No pending changes found (they were already applied or rejected).")
     except Exception as e:
         log.error("Reject failed: %s", e)
         _update_slack(response_url, f"❌ Rejection failed: {e}")

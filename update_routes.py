@@ -176,6 +176,7 @@ def main():
     hostnames = load_hostnames(config, args)
     slack_webhook = config.get("slack_webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
     pending_file = config.get("pending_file", "/tmp/pending_routes.json")
+    rejected_file = pending_file.replace("pending_", "rejected_")
     restart_mode = config.get("restart_mode", "openvpn_only")
     restart_cmd = config.get(
         "openvpn_restart_cmd",
@@ -253,6 +254,17 @@ def main():
     if not any_change:
         log.info("No changes detected for any hostname")
         return
+
+    # Check if same changes were already rejected — don't re-notify until DNS changes again
+    if os.path.exists(rejected_file):
+        try:
+            with open(rejected_file) as f:
+                rejected = json.load(f)
+            if rejected.get("routes") == new_routes_all:
+                log.info("Changes match previously rejected state — skipping notification")
+                return
+        except (json.JSONDecodeError, IOError):
+            log.warning("Could not read rejected state file")
 
     # Check if same changes are already pending — skip duplicate notifications
     if os.path.exists(pending_file):
