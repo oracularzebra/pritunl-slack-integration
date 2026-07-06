@@ -1,2 +1,4 @@
 pymongo>=4.0
 requests>=2.25
+flask>=2.3
+gunicorn>=21.2

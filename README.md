@@ -35,11 +35,14 @@ Create `config.json`:
     "my-alb-2.us-east-1.elb.amazonaws.com"
   ],
   "slack_webhook": "https://hooks.slack.com/services/T00/B00/xxx",
+  "slack_signing_secret": "your_slack_signing_secret",
   "openvpn_restart_cmd": "sudo systemctl restart pritunl",
   "restart_mode": "openvpn_only",
   "nat": true,
   "mongodb_uri": "mongodb://localhost:27017",
-  "mongodb_db": "pritunl"
+  "mongodb_db": "pritunl",
+  "pending_file": "/tmp/pending_routes.json",
+  "port": 5000
 }
 ```
 
@@ -97,6 +100,81 @@ Pritunl Routes Updated — CloudKeeper
   Old: (none)
   New: 10.0.2.20, 10.0.2.21
 ```
+
+## Webhook Server (CRUD + Slack)
+
+`webhook_server.py` is a Flask app providing a REST API for routes and Slack integration.
+
+### Run
+
+```bash
+pip install flask gunicorn
+python webhook_server.py config.json
+```
+
+Or with gunicorn (production):
+
+```bash
+# Set CONFIG_PATH env var so the app finds it
+CONFIG_PATH=/path/to/config.json gunicorn -b 0.0.0.0:5000 webhook_server:app
+```
+
+### REST API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/routes` | List all routes |
+| `POST` | `/api/routes` | Add a route (`{"network": "10.0.0.0/16", "comment": "...", "nat": true}`) |
+| `PUT` | `/api/routes/<network>` | Update a route (URL-encode CIDR, e.g. `10.0.0.0%2F16`) |
+| `DELETE` | `/api/routes/<network>` | Delete a route |
+| `POST` | `/api/restart` | Trigger OpenVPN restart |
+
+### Slack Integration
+
+#### 1. Slash Command (`/routes`)
+
+Create a Slack app with a Slash Command:
+
+1. Go to https://api.slack.com/apps → Create New App
+2. **Slash Commands** → Create New Command
+   - Command: `/routes`
+   - Request URL: `https://your-public-endpoint/slack/command`
+   - Description: "Manage Pritunl routes"
+3. **Basic Information** → copy **Signing Secret** → add to `config.json` as `slack_signing_secret`
+4. Install the app to your workspace
+
+**Available commands:**
+
+```
+/routes list              — show all routes
+/routes add 10.0.0.0/16   — add a route
+/routes delete 10.0.0.0/16 — delete a route
+```
+
+#### 2. Interactive Buttons (Approve/Reject)
+
+For the approval flow (polling script saves pending changes, Slack asks for approval):
+
+1. In your Slack app, enable **Interactivity**
+2. Set **Request URL** to `https://your-public-endpoint/slack/interactive`
+3. The poller (`update_routes.py`) saves pending changes to `pending_file`, then sends a Slack message with **Approve** / **Reject** buttons
+4. Clicking **Approve** applies the routes and restarts OpenVPN
+
+#### 3. Making the Endpoint Public
+
+The Flask app must be publicly accessible with HTTPS. Options:
+
+- **Behind your ALB** — add a listener rule forwarding `/slack/` to the EC2 instance on port 5000
+- **ngrok** (testing) — `ngrok http 5000` gives a public HTTPS URL
+- **Caddy / nginx** — reverse proxy with Let's Encrypt
+
+### New Config Fields
+
+| Key | Required | Description |
+|---|---|---|
+| `slack_signing_secret` | No | Slack app signing secret (verifies requests) |
+| `pending_file` | No | Path to store pending route changes (default: `/tmp/pending_routes.json`) |
+| `port` | No | Flask listen port (default: `5000`) |
 
 ## Verification
 
