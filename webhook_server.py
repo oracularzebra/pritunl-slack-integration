@@ -153,8 +153,20 @@ def delete_hostname():
         abort(404, description=f"Hostname {hostname} not found")
     _hostnames.remove(hostname)
     _write_hostnames()
+
+    comment_tag = f"dns:{hostname}"
+    server = get_server()
+    routes = server.get("routes", [])
+    new_routes = [r for r in routes if r.get("comment") != comment_tag]
+    removed = len(routes) - len(new_routes)
+    if removed:
+        collection.update_one(
+            {"name": get_server_name()}, {"$set": {"routes": new_routes}}
+        )
+        log.info("Removed %d route(s) for %s", removed, hostname)
+
     log.info("Hostname deleted: %s", hostname)
-    return jsonify({"hostname": hostname, "hostnames": _hostnames})
+    return jsonify({"hostname": hostname, "hostnames": _hostnames, "routes_removed": removed})
 
 
 # ─── REST API ────────────────────────────────────────────────
@@ -262,62 +274,75 @@ def slack_command():
                     },
                 }
             )
-        return jsonify({"blocks": blocks})
+        return jsonify({"response_type": "in_channel", "blocks": blocks})
 
     elif command == "add":
         if len(parts) < 2:
-            return jsonify({"text": "Usage: `/routes add <network> [comment]`"})
+            return jsonify({"response_type": "in_channel", "text": "Usage: `/routes add <network> [comment]`"})
         network = parts[1]
         comment = " ".join(parts[2:]) if len(parts) > 2 else ""
         if any(r["network"] == network for r in routes):
-            return jsonify({"text": f"Route `{network}` already exists."})
+            return jsonify({"response_type": "in_channel", "text": f"Route `{network}` already exists."})
         route = {"network": network, "comment": comment, "nat": True}
         routes.append(route)
         collection.update_one(
             {"name": get_server_name()}, {"$set": {"routes": routes}}
         )
-        return jsonify({"text": f"Route `{network}` added."})
+        return jsonify({"response_type": "in_channel", "text": f"Route `{network}` added."})
 
     elif command == "delete":
         if len(parts) < 2:
-            return jsonify({"text": "Usage: `/routes delete <network>`"})
+            return jsonify({"response_type": "in_channel", "text": "Usage: `/routes delete <network>`"})
         network = parts[1]
         new_routes = [r for r in routes if r["network"] != network]
         if len(new_routes) == len(routes):
-            return jsonify({"text": f"Route `{network}` not found."})
+            return jsonify({"response_type": "in_channel", "text": f"Route `{network}` not found."})
         collection.update_one(
             {"name": get_server_name()}, {"$set": {"routes": new_routes}}
         )
-        return jsonify({"text": f"Route `{network}` deleted."})
+        return jsonify({"response_type": "in_channel", "text": f"Route `{network}` deleted."})
 
     elif command == "hostnames":
         lines = [f"*Tracked hostnames ({len(_hostnames)}):*"]
         for h in _hostnames:
             lines.append(f"• `{h}`")
-        return jsonify({"text": "\n".join(lines)})
+        return jsonify({"response_type": "in_channel", "text": "\n".join(lines)})
 
     elif command == "watch":
         if len(parts) < 2:
-            return jsonify({"text": "Usage: `/routes watch <hostname>`"})
+            return jsonify({"response_type": "in_channel", "text": "Usage: `/routes watch <hostname>`"})
         hostname = parts[1]
         if hostname in _hostnames:
-            return jsonify({"text": f"`{hostname}` is already being watched."})
+            return jsonify({"response_type": "in_channel", "text": f"`{hostname}` is already being watched."})
         _hostnames.append(hostname)
         _write_hostnames()
-        return jsonify({"text": f"Now watching `{hostname}`. The poller will track its IPs."})
+        return jsonify({"response_type": "in_channel", "text": f"Now watching `{hostname}`. The poller will track its IPs."})
 
     elif command == "unwatch":
         if len(parts) < 2:
-            return jsonify({"text": "Usage: `/routes unwatch <hostname>`"})
+            return jsonify({"response_type": "in_channel", "text": "Usage: `/routes unwatch <hostname>`"})
         hostname = parts[1]
         if hostname not in _hostnames:
-            return jsonify({"text": f"`{hostname}` is not being watched."})
+            return jsonify({"response_type": "in_channel", "text": f"`{hostname}` is not being watched."})
         _hostnames.remove(hostname)
         _write_hostnames()
-        return jsonify({"text": f"Stopped watching `{hostname}`."})
+
+        comment_tag = f"dns:{hostname}"
+        server = get_server()
+        routes = server.get("routes", [])
+        new_routes = [r for r in routes if r.get("comment") != comment_tag]
+        removed = len(routes) - len(new_routes)
+        if removed:
+            collection.update_one(
+                {"name": get_server_name()}, {"$set": {"routes": new_routes}}
+            )
+            log.info("Removed %d route(s) for %s", removed, hostname)
+
+        return jsonify({"response_type": "in_channel", "text": f"Stopped watching `{hostname}`. Removed {removed} route(s)."})
 
     else:
         return jsonify({
+            "response_type": "in_channel",
             "text": (
                 "Available commands:\n"
                 "• `/routes list` — show all routes\n"
@@ -361,7 +386,7 @@ def slack_interactive():
         ).start()
         return "", 200
 
-    return jsonify({"text": "Unknown action."})
+    return jsonify({"response_type": "in_channel", "text": "Unknown action."})
 
 
 def _handle_approve(pending_file, response_url, user_name):
