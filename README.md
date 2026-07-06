@@ -36,6 +36,7 @@ Create `config.json`:
   ],
   "slack_webhook": "https://hooks.slack.com/services/T00/B00/xxx",
   "openvpn_restart_cmd": "sudo systemctl restart pritunl",
+  "restart_mode": "openvpn_only",
   "nat": true,
   "mongodb_uri": "mongodb://localhost:27017",
   "mongodb_db": "pritunl"
@@ -47,10 +48,24 @@ Create `config.json`:
 | `server_name` | Yes | Pritunl server name (matches `name` field in MongoDB `servers` collection) |
 | `hostnames` | Yes | Array of DNS names to track |
 | `slack_webhook` | No | Slack incoming webhook URL (or `SLACK_WEBHOOK_URL` env var) |
-| `openvpn_restart_cmd` | No | Default: `sudo systemctl restart pritunl` |
+| `restart_mode` | No | `"openvpn_only"` (kill child, Pritunl respawns) or `"full"` (systemctl restart) | `"openvpn_only"` |
+| `openvpn_restart_cmd` | No | Used as fallback when `restart_mode: "openvpn_only"` or always when `"full"` | `sudo systemctl restart pritunl` |
 | `nat` | No | Enable NAT on routes (default: `true`) |
 | `mongodb_uri` | No | Default: `mongodb://localhost:27017` (or `MONGODB_URI` env var) |
 | `mongodb_db` | No | Default: `pritunl` |
+
+## Restart Mode
+
+Pritunl manages OpenVPN as a child process. The `restart_mode` field controls how routes are applied:
+
+**`openvpn_only` (default) — minimal downtime:**
+1. Kills the OpenVPN child process(es) with SIGTERM
+2. Pritunl detects the process died and respawns it with the updated config
+3. If OpenVPN doesn't respawn within 3 seconds, falls back to full `systemctl restart pritunl`
+
+**`full` — full service restart:**
+1. Runs `systemctl restart pritunl` directly
+2. Longer downtime but guaranteed to work
 
 ## Usage
 
