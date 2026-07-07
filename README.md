@@ -19,10 +19,116 @@ Polls DNS hostnames (ALBs, NLBs, etc.) for IP changes, updates Pritunl VPN route
 - `sudo` access to restart OpenVPN
 - (Optional) Slack incoming webhook URL
 
+## EC2 Setup (Pritunl Server)
+
+Deploy the poller and webhook server directly on the EC2 instance running Pritunl.
+
+### 1. Clone the Repository
+
+```bash
+sudo mkdir -p /opt/pritunl-slack
+sudo git clone <repo-url> /opt/pritunl-slack
+sudo chown -R $USER:$USER /opt/pritunl-slack
+cd /opt/pritunl-slack
+```
+
+### 2. Python Virtual Environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Create Configuration Files
+
+**config.json:**
+
+```json
+{
+  "server_name": "CloudKeeper",
+  "slack_webhook": "https://hooks.slack.com/services/T00/B00/xxx",
+  "slack_signing_secret": "your_slack_signing_secret",
+  "openvpn_restart_cmd": "sudo systemctl restart pritunl",
+  "restart_mode": "openvpn_only",
+  "nat": true,
+  "mongodb_uri": "mongodb://localhost:27017",
+  "mongodb_db": "pritunl",
+  "pending_file": "/tmp/pending_routes.json",
+  "port": 5000
+}
+```
+
+**hostnames.json:**
+
+```json
+[
+  "my-alb-1.us-east-1.elb.amazonaws.com"
+]
+```
+
+### 4. Install Systemd Services
+
+Update the paths in the `.service` and `.timer` files to match `/opt/pritunl-slack`, then copy them:
+
+```bash
+sudo cp pritunl-webhook.service /etc/systemd/system/
+sudo cp pritunl-route-updater.service /etc/systemd/system/
+sudo cp pritunl-route-updater.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+### 5. Start the Services
+
+```bash
+# Webhook server (Flask API + Slack integration)
+sudo systemctl enable --now pritunl-webhook.service
+
+# Poller timer (runs every 10 seconds)
+sudo systemctl enable --now pritunl-route-updater.timer
+```
+
+Check status:
+
+```bash
+sudo systemctl status pritunl-webhook.service
+sudo systemctl status pritunl-route-updater.timer
+```
+
+### 6. Configure ALB Listener Rules
+
+Add a listener rule to your Application Load Balancer that forwards traffic to the target group containing this EC2 instance:
+
+- **Host header:** `slack-api.yourdomain.com` (or a path-based rule)
+- **Port:** Forward to `5000`
+- **Paths:** `/api/*`, `/slack/*`
+
+Alternatively, if the Flask server should be accessible directly, ensure port `5000` is open in the security group.
+
+### 7. Slack App Configuration
+
+1. Go to https://api.slack.com/apps
+2. For **Slash Commands:** set Request URL to `https://slack-api.yourdomain.com/slack/command`
+3. For **Interactivity:** set Request URL to `https://slack-api.yourdomain.com/slack/interactive`
+4. Copy the **Signing Secret** into `config.json` as `slack_signing_secret`
+
+### 8. Verify
+
+```bash
+# Test the webhook server
+curl http://localhost:5000/api/routes
+
+# Check poller logs
+tail -f /var/log/pritunl-route-updater.log
+
+# Check webhook logs
+journalctl -u pritunl-webhook.service -f
+```
+
 ## Installation
 
 ```bash
-pip install pymongo requests flask gunicorn
+pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -320,5 +426,5 @@ Both components log at `INFO` level by default. To change the level (e.g., to `D
 sudo iptables -t nat -L POSTROUTING -n -v | grep <new_ip>
 
 # Check routes in MongoDB
-mongosh pritunl --eval 'db.servers.findOne({name:"CloudKeeper"}, {routes:1}).pretty()'
+mongosh pritunl --eval 'db.servers.findOne({name:<your-org>}, {routes:1}).pretty()'
 ```
