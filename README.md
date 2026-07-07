@@ -58,6 +58,7 @@ Connection and behaviour settings:
 | `mongodb_db` | No | Default: `pritunl` |
 | `pending_file` | No | Path for pending route changes (default: `/tmp/pending_routes.json`) |
 | `port` | No | Flask listen port (default: `5000`) |
+| `slack_channel_id` | No | Restrict Slack commands/interactions to this channel ID only (leave empty `""` to allow all channels) |
 
 ### hostnames.json
 
