@@ -256,6 +256,63 @@ The Flask app must be publicly accessible with HTTPS:
 | `pritunl-route-updater.timer` | Systemd timer (every 10s) for poller |
 | `pritunl-webhook.service` | Systemd service for webhook server |
 
+## Logging
+
+Both `update_routes.py` and `webhook_server.py` log to **stderr** using Python's standard `logging` module with the format:
+
+```
+2026-07-07 12:34:56 INFO Slash command from john (U123): /routes list
+2026-07-07 12:34:56 INFO Resolving: my-alb.example.com
+2026-07-07 12:34:56 INFO Route changes approved by john
+```
+
+### What Is Logged
+
+| Component | Events Logged |
+|---|---|
+| **Poller** (`update_routes.py`) | DNS resolution for each hostname, IP changes detected, pending file saved/updated, Slack notification sent/failed |
+| **Webhook Server** (`webhook_server.py`) | All slash commands with username (`/routes list`, `add`, `delete`, `watch`, `unwatch`), approve/reject actions with username, route modifications, errors |
+
+### Viewing Logs
+
+**Poller** (redirected to file in `pritunl-route-updater.service`):
+
+```bash
+tail -f /var/log/pritunl-route-updater.log
+tail -50 /var/log/pritunl-route-updater.log
+```
+
+**Webhook server** (gunicorn → stderr → journald):
+
+```bash
+journalctl -u pritunl-webhook.service -f
+journalctl -u pritunl-webhook.service -n 50
+journalctl -u pritunl-webhook.service --since "1 hour ago"
+```
+
+When running directly in a terminal (for testing), logs appear on stderr.
+
+### Redirecting to a File
+
+For the poller (cron/systemd timer), redirect stderr to a file:
+
+```bash
+*/5 * * * * /usr/bin/python3 /path/to/update_routes.py --config /path/to/config.json >> /var/log/pritunl-route-updater.log 2>&1
+```
+
+For the webhook server with gunicorn:
+
+```bash
+CONFIG_PATH=/path/to/config.json gunicorn -b 0.0.0.0:5000 \
+  --access-logfile /var/log/pritunl-webhook-access.log \
+  --error-logfile /var/log/pritunl-webhook-error.log \
+  webhook_server:app
+```
+
+### Log Level
+
+Both components log at `INFO` level by default. To change the level (e.g., to `DEBUG` for more verbose output), modify the `logging.basicConfig(level=logging.INFO, ...)` line at the top of each file.
+
 ## Verification
 
 ```bash
